@@ -13,6 +13,8 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from email.utils import parseaddr
+from typing import Any
 
 from ..services.graph_client import GraphClient
 from ..services.llm import LLMProvider
@@ -28,7 +30,12 @@ _CATEGORY_SYSTEM = (
     '{"category": "personal|work|transactional|marketing|notification", '
     '"confidence": 0.0-1.0, "reason": "short"}. '
     "'personal' means a human being writing to the user individually and "
-    "expecting a written reply (friends, family, direct 1:1 messages). "
+    "expecting a written reply, even if the topic is work-related "
+    "(friends, family, direct 1:1 requests, a colleague or partner asking "
+    "for help, clarification, or a decision). "
+    "'work' means work-related email that is still operational rather than a "
+    "clear direct-reply request, such as status updates, routed threads, FYIs, "
+    "or team/process traffic. "
     "Newsletters, receipts, automated alerts, calendar invites, job apps, "
     "and mass-marketing are NEVER personal. "
     "When historical outgoing replies are provided, treat them as evidence of "
@@ -36,6 +43,54 @@ _CATEGORY_SYSTEM = (
     "'personal': repeated replies to coworkers, vendors or support addresses "
     "can still be 'work' or 'transactional'."
 )
+_PERSONAL_EMAIL_DOMAINS = {
+    "gmail.com",
+    "hotmail.com",
+    "outlook.com",
+    "outlook.es",
+    "live.com",
+    "msn.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "yahoo.com",
+    "yahoo.es",
+    "proton.me",
+    "protonmail.com",
+    "gmx.com",
+}
+_DIRECT_REQUEST_PATTERNS = [
+    r"\bme puedes\b",
+    r"\bpuedes ayudarme\b",
+    r"\bme ayudas\b",
+    r"\bpodrias\b",
+    r"\bpuedes\b",
+    r"\bcan you\b",
+    r"\bcould you\b",
+    r"\bneed your help\b",
+    r"\bhelp me\b",
+    r"\bgracias\b",
+    r"\bthanks\b",
+]
+_AUTOMATED_PATTERNS = [
+    r"\bnoreply\b",
+    r"\bno-reply\b",
+    r"\bdo not reply\b",
+    r"\bmailer-daemon\b",
+    r"\bautomatic(?:o|a)?\b",
+    r"\bautogenerad[oa]\b",
+    r"\bnewsletter\b",
+    r"\bsuscrib",
+    r"\brecibo\b",
+    r"\bfactura\b",
+    r"\bnotification\b",
+    r"\bplanner\b",
+    r"\btask assigned\b",
+]
+_EXTERNAL_BANNER_MARKERS = [
+    "REMITENTE EXTERNO",
+    "EXTERNAL SENDER",
+]
 
 
 class CoordinatorAgent:
@@ -49,6 +104,7 @@ class CoordinatorAgent:
         *,
         inbox_batch_size: int = 25,
         personal_threshold: float = 0.8,
+        inbox_from_iso: str | None = None,
     ):
         self.llm = llm
         self.graph = graph
@@ -57,11 +113,11 @@ class CoordinatorAgent:
         self.responder = responder
         self.inbox_batch_size = inbox_batch_size
         self.personal_threshold = personal_threshold
+        self.inbox_from_iso = inbox_from_iso
 
     def run_cycle(self) -> dict:
         """One polling pass. Returns a summary dict for the panel."""
-        since = self.sqlite.last_seen_received_at()
-        messages = self.graph.list_inbox(since_iso=since, top=self.inbox_batch_size)
+        messages = self._load_inbox_batch()
         processed = 0
         classified = 0
         pending = 0
@@ -87,14 +143,17 @@ class CoordinatorAgent:
                     notes=result.reason,
                 )
                 if result.auto_applied and result.folder_id:
-                    self.graph.move_message(msg["id"], result.folder_id)
+                    moved_message = self.graph.move_message(msg["id"], result.folder_id)
+                    moved_graph_id = moved_message.get("id") or msg["id"]
                     self.sqlite.update_email(
                         email_id,
+                        graph_id=moved_graph_id,
                         folder_id=result.folder_id,
                         folder_name=result.folder_name,
                         status="classified",
                         confidence=result.confidence,
                     )
+                    email_row["graph_id"] = moved_graph_id
                     classified += 1
                 else:
                     self.sqlite.update_email(
@@ -154,6 +213,22 @@ class CoordinatorAgent:
         }
 
     # ------------------------------------------------------ helpers
+    def _load_inbox_batch(self) -> list[dict]:
+        if not self.inbox_from_iso:
+            since = self.sqlite.last_seen_received_at()
+            return self.graph.list_inbox(since_iso=since, top=self.inbox_batch_size)
+        selected: list[dict] = []
+        for msg in self.graph.iter_inbox(
+            since_iso=self.inbox_from_iso,
+            page_size=max(25, min(self.inbox_batch_size, 50)),
+        ):
+            if self.sqlite.has_email_graph_id(msg["id"]):
+                continue
+            selected.append(msg)
+            if len(selected) >= self.inbox_batch_size:
+                break
+        return selected
+
     def _ingest(self, msg: dict) -> int | None:
         from_field = (msg.get("from") or {}).get("emailAddress") or {}
         to_addrs = [
@@ -176,6 +251,7 @@ class CoordinatorAgent:
     def _categorise(self, email_row: dict) -> tuple[str, float, str]:
         outbound_style = self.sqlite.style_profile(limit=20)
         correspondence = self.sqlite.correspondence_reference(email_row.get("from_addr"), limit=3)
+        clean_body = self._clean_body_preview(email_row.get("body_snippet") or "")
         user_prompt = (
             "== User reply style baseline ==\n"
             f"{self._style_reference_text(outbound_style)}\n\n"
@@ -184,7 +260,7 @@ class CoordinatorAgent:
             "== Incoming email ==\n"
             f"Subject: {email_row.get('subject') or ''}\n"
             f"From: {email_row.get('from_name')} <{email_row.get('from_addr')}>\n"
-            f"Body preview:\n{email_row.get('body_snippet') or ''}\n\n"
+            f"Body preview:\n{clean_body}\n\n"
             "Return the JSON described in the system prompt."
         )
         raw = self.llm.complete(_CATEGORY_SYSTEM, user_prompt, json_mode=True, temperature=0.0)
@@ -198,6 +274,13 @@ class CoordinatorAgent:
             cat = "notification"
         conf = float(data.get("confidence") or 0.0)
         reason = str(data.get("reason") or "")
+        fallback = self._fallback_personal_category(
+            email_row,
+            clean_body=clean_body,
+            correspondence=correspondence,
+        )
+        if fallback and (cat == "notification" and conf <= 0.05):
+            return fallback
         return cat, conf, reason
 
     @staticmethod
@@ -263,3 +346,69 @@ class CoordinatorAgent:
         if len(clean) <= limit:
             return clean
         return clean[: limit - 3].rstrip() + "..."
+
+    @staticmethod
+    def _clean_body_preview(body: str) -> str:
+        if not body:
+            return ""
+        cleaned = body
+        for marker in _EXTERNAL_BANNER_MARKERS:
+            idx = cleaned.find(marker)
+            if idx >= 0:
+                cleaned = cleaned[:idx]
+                break
+        lines = []
+        for line in cleaned.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                lines.append("")
+                continue
+            if re.fullmatch(r"\S+@\S+\.\S+", stripped):
+                continue
+            lines.append(stripped)
+        return "\n".join(lines).strip()
+
+    def _fallback_personal_category(
+        self,
+        email_row: dict[str, Any],
+        *,
+        clean_body: str,
+        correspondence: dict[str, Any],
+    ) -> tuple[str, float, str] | None:
+        sender_addr = (email_row.get("from_addr") or "").strip().lower()
+        sender_name = (email_row.get("from_name") or "").strip().lower()
+        if not sender_addr:
+            return None
+        _, parsed_addr = parseaddr(sender_addr)
+        sender_addr = parsed_addr or sender_addr
+        sender_domain = sender_addr.split("@", 1)[-1] if "@" in sender_addr else ""
+        body = clean_body.lower()
+        if not body:
+            return None
+        if any(re.search(pattern, sender_addr) or re.search(pattern, sender_name) or re.search(pattern, body) for pattern in _AUTOMATED_PATTERNS):
+            return None
+
+        score = 0.0
+        reasons: list[str] = []
+        if sender_domain in _PERSONAL_EMAIL_DOMAINS:
+            score += 0.35
+            reasons.append("personal_mailbox")
+        if correspondence.get("exact_reply_count", 0) > 0:
+            score += 0.35
+            reasons.append("exact_reply_history")
+        elif correspondence.get("domain_reply_count", 0) > 0:
+            score += 0.15
+            reasons.append("domain_reply_history")
+        if any(re.search(pattern, body) for pattern in _DIRECT_REQUEST_PATTERNS):
+            score += 0.35
+            reasons.append("direct_request_language")
+        if "?" in clean_body:
+            score += 0.1
+            reasons.append("question_mark")
+        if len(clean_body.split()) <= 40:
+            score += 0.05
+            reasons.append("short_plain_request")
+        if score < 0.65:
+            return None
+        confidence = min(0.95, round(score, 3))
+        return "personal", confidence, "heuristic:" + ",".join(reasons)

@@ -60,6 +60,7 @@ class AppState:
             vectors=self.vectors,
             atendidos_folder_id="",  # resolved on bootstrap
             language_hint=cfg.get("responder", "draft_language", default="auto"),
+            sent_from_iso=cfg.agent_sent_from_iso,
         )
         self.coordinator = CoordinatorAgent(
             llm=self.llm,
@@ -71,6 +72,7 @@ class AppState:
             personal_threshold=float(
                 cfg.get("responder", "personal_confidence_threshold", default=0.8)
             ),
+            inbox_from_iso=cfg.agent_inbox_from_iso,
         )
         self._folders: list[dict] = []
         self._graph_lock = threading.Lock()

@@ -9,6 +9,18 @@ def test_config_loads_and_exposes_defaults():
     assert "lancedb" in cfg.lancedb_path
 
 
+def test_config_parses_agent_from_dates(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("server:\n  port: 8765\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_INBOX_FROM", "20260419")
+    monkeypatch.setenv("AGENT_SENT_FROM", "20260101")
+
+    cfg = AppConfig.load(cfg_path)
+
+    assert cfg.agent_inbox_from_iso == "2026-04-19T00:00:00Z"
+    assert cfg.agent_sent_from_iso == "2026-01-01T00:00:00Z"
+
+
 def test_scopes_block_mail_send_even_if_injected(tmp_path, monkeypatch):
     # If a user edits config.yaml to add Mail.Send, the GraphClient strips it.
     from email_agent.services.graph_client import GraphClient

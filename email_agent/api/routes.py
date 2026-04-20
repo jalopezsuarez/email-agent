@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, HTTPException
 
 from ..services.graph_client import GraphAuthError
@@ -59,6 +60,28 @@ def build_router(app_state) -> APIRouter:
     def pending_reviews():
         return app_state.sqlite.list_pending_reviews()
 
+    @router.get("/pending-reviews/{email_id}")
+    def pending_review_detail(email_id: int):
+        email = app_state.sqlite.get_email(email_id)
+        if not email:
+            raise HTTPException(404, "Email not found")
+        body_text = email.get("body_snippet") or ""
+        body_html = None
+        body_error = None
+        try:
+            message = app_state.graph.get_message(email["graph_id"])
+            body = message.get("body") or {}
+            body_html = body.get("content") or None
+            body_text = _message_body_to_text(body) or body_text
+        except Exception as exc:
+            body_error = str(exc)
+        return {
+            **email,
+            "body_text": body_text,
+            "body_html": body_html,
+            "body_error": body_error,
+        }
+
     @router.post("/pending-reviews/{email_id}/resolve")
     def resolve_review(email_id: int, body: ResolveReviewBody):
         email = app_state.sqlite.get_email(email_id)
@@ -66,11 +89,12 @@ def build_router(app_state) -> APIRouter:
             raise HTTPException(404, "Email not found")
         # Move in Graph.
         try:
-            app_state.graph.move_message(email["graph_id"], body.folder_id)
+            moved = app_state.graph.move_message(email["graph_id"], body.folder_id)
         except Exception as exc:
             raise HTTPException(502, f"Graph move failed: {exc}")
         app_state.sqlite.update_email(
             email_id,
+            graph_id=moved.get("id") or email["graph_id"],
             folder_id=body.folder_id,
             folder_name=body.folder_name,
             status="classified",
@@ -134,7 +158,14 @@ def build_router(app_state) -> APIRouter:
 
     @router.get("/style-samples")
     def style_samples(recipient: str | None = None):
-        return app_state.sqlite.list_style_samples_for(recipient, limit=100)
+        samples = app_state.sqlite.list_style_samples_for(recipient, limit=100)
+        return [
+            {
+                **sample,
+                "suggested_tone_tag": app_state.responder.suggest_tone_tag(sample),
+            }
+            for sample in samples
+        ]
 
     @router.post("/style-samples/{sample_id}/tag")
     def tag_style(sample_id: int, body: TagStyleBody):
@@ -167,3 +198,15 @@ def build_router(app_state) -> APIRouter:
         return {"ok": True}
 
     return router
+
+
+def _message_body_to_text(body: dict) -> str:
+    content = body.get("content") or ""
+    if not content:
+        return ""
+    if str(body.get("contentType") or "").lower() == "html":
+        try:
+            return BeautifulSoup(content, "html.parser").get_text("\n", strip=True)
+        except Exception:
+            return content
+    return str(content)

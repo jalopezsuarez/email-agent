@@ -41,6 +41,7 @@ Outlook →  │ EmailCoordinator    │  polls INBOX, dispatches, logs
 pip install -r requirements.txt
 cp .env.example .env
 # Fill MS_CLIENT_ID and the API key for the LLM provider you choose in .env
+# Optional: AGENT_INBOX_FROM=20260419 and AGENT_SENT_FROM=20260101
 python main.py --port 8765
 ```
 
@@ -83,6 +84,12 @@ the Configuration tab when the dashboard shows consistent high confidence.
 The Sent Items training step now helps in two places: it improves reply
 drafting and it gives the personal/work detector historical evidence about
 which senders or domains the user already exchanges direct replies with.
+
+If you set `AGENT_INBOX_FROM=YYYYMMDD`, inbox classification only considers
+messages from that date onward and backfills unseen inbox items from that
+window. If you set `AGENT_SENT_FROM=YYYYMMDD`, Sent Items learning starts at
+that date and remains incremental: rerunning only adds new sent mails, and
+moving the date further into the past widens the historical learning range.
 
 ## Tests
 

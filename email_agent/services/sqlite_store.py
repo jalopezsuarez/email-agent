@@ -163,6 +163,14 @@ class SQLiteStore:
             row = c.execute("SELECT * FROM emails WHERE id = ?", (email_id,)).fetchone()
             return dict(row) if row else None
 
+    def has_email_graph_id(self, graph_id: str) -> bool:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM emails WHERE graph_id = ? LIMIT 1",
+                (graph_id,),
+            ).fetchone()
+            return bool(row)
+
     def list_pending_reviews(self, limit: int = 50) -> list[dict]:
         with self._conn() as c:
             rows = c.execute(
@@ -375,6 +383,16 @@ class SQLiteStore:
     def style_samples_count(self) -> int:
         with self._conn() as c:
             return c.execute("SELECT COUNT(*) AS n FROM style_samples").fetchone()["n"]
+
+    def style_sent_range(self) -> tuple[str | None, str | None]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT MIN(sent_at) AS min_sent_at, MAX(sent_at) AS max_sent_at "
+                "FROM style_samples"
+            ).fetchone()
+            if not row:
+                return None, None
+            return row["min_sent_at"], row["max_sent_at"]
 
     def tag_style_sample(self, sample_id: int, tone_tag: str) -> None:
         with self._conn() as c:

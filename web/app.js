@@ -14,6 +14,18 @@ const api = (path, opts = {}) =>
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+const TONE_OPTIONS = [
+  ["neutral", "Neutro"],
+  ["friendly", "Cercano"],
+  ["warm", "Calido"],
+  ["formal", "Formal"],
+  ["direct", "Directo"],
+  ["brief", "Breve"],
+  ["supportive", "Empatico"],
+  ["assertive", "Asertivo"],
+];
+const toneLabel = (value) =>
+  TONE_OPTIONS.find(([tone]) => tone === value)?.[1] || value || "Neutro";
 const el = (tag, attrs = {}, ...children) => {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -100,86 +112,283 @@ function renderGraphStatus(status) {
   help.textContent = status.graph_error || status.graph_message || "";
 }
 
+const reviewState = {
+  items: [],
+  folders: [],
+  details: new Map(),
+  forms: new Map(),
+  selectedId: null,
+};
+
 async function loadReviews() {
-  const [reviews, folders] = await Promise.all([
-    api("/pending-reviews"),
-    api("/folders"),
-  ]);
+  const [reviews, folders] = await Promise.all([api("/pending-reviews"), api("/folders")]);
+  reviewState.items = reviews;
+  reviewState.folders = folders;
   const list = $("#reviews-list");
+  const detail = $("#review-detail");
   list.innerHTML = "";
+  detail.innerHTML = "";
   if (!reviews.length) {
     list.append(el("p", { class: "hint" }, "Nada pendiente. ¡Bien hecho!"));
+    detail.append(el("p", { class: "hint review-detail-empty" }, "No hay mensajes para revisar."));
+    reviewState.selectedId = null;
     return;
   }
-  reviews.forEach((r) => {
-    const folderSelect = el(
-      "select",
-      {},
-      ...folders.map((f) =>
-        el("option", { value: f.id, "data-name": f.full_name }, f.full_name),
-      ),
-    );
-    if (r.folder_id) folderSelect.value = r.folder_id;
+  reviews.forEach((review) => ensureReviewForm(review));
+  if (!reviews.some((review) => review.id === reviewState.selectedId)) {
+    reviewState.selectedId = reviews[0].id;
+  }
+  renderReviewList();
+  renderReviewDetail(true);
+  await ensureReviewDetail(reviewState.selectedId);
+  renderReviewDetail(false);
+}
 
-    const categorySelect = el(
-      "select",
-      {},
-      ...["", "personal", "work", "transactional", "marketing", "notification"].map((c) =>
-        el("option", { value: c }, c || "(sin categoría)"),
-      ),
-    );
-    if (r.category) categorySelect.value = r.category;
-
-    const note = el("input", {
-      type: "text",
-      placeholder: "Nota en lenguaje natural (opcional)",
-      style: "flex:1",
+function ensureReviewForm(review) {
+  if (!reviewState.forms.has(review.id)) {
+    reviewState.forms.set(review.id, {
+      folderId: review.folder_id || "",
+      category: review.category || "",
+      note: "",
     });
+  }
+  return reviewState.forms.get(review.id);
+}
 
-    const card = el(
-      "div",
-      { class: "review" },
-      el("h4", {}, r.subject || "(sin asunto)"),
-      el("div", { class: "meta" }, `De ${r.from_name || ""} <${r.from_addr || ""}> · ${r.received_at}`),
-      el("div", { class: "snippet" }, r.body_snippet || ""),
+function getReviewById(reviewId) {
+  return reviewState.items.find((review) => review.id === reviewId) || null;
+}
+
+async function ensureReviewDetail(reviewId) {
+  if (!reviewId || reviewState.details.has(reviewId)) return reviewState.details.get(reviewId);
+  const fallback = getReviewById(reviewId);
+  try {
+    const detail = await api(`/pending-reviews/${reviewId}`);
+    reviewState.details.set(reviewId, detail);
+  } catch (e) {
+    reviewState.details.set(reviewId, {
+      ...(fallback || {}),
+      body_text: fallback?.body_snippet || "",
+      body_error: e.message,
+    });
+  }
+  return reviewState.details.get(reviewId);
+}
+
+function renderReviewList() {
+  const list = $("#reviews-list");
+  list.innerHTML = "";
+  reviewState.items.forEach((review) => {
+    const selected = review.id === reviewState.selectedId;
+    const item = el(
+      "article",
+      {
+        class: `review-item${selected ? " selected" : ""}`,
+        onclick: async (ev) => {
+          if (ev.target.closest("input, select, button, textarea")) return;
+          reviewState.selectedId = review.id;
+          renderReviewList();
+          renderReviewDetail(true);
+          await ensureReviewDetail(review.id);
+          renderReviewDetail(false);
+        },
+      },
       el(
         "div",
-        { class: "suggestion" },
-        "Sugerencia: ",
-        el("span", { class: "folder" }, r.folder_name || "—"),
-        " · confianza ",
-        el("span", { class: "conf" }, String(r.confidence ?? "—")),
+        { class: "review-line review-line-from" },
+        el("span", { class: "review-from" }, formatReviewSender(review)),
+        el("span", { class: "review-date" }, formatReviewDate(review.received_at)),
       ),
-      el(
-        "div",
-        { class: "review-actions" },
-        folderSelect,
-        categorySelect,
-        note,
-        el(
-          "button",
-          {
-            onclick: async () => {
-              await api(`/pending-reviews/${r.id}/resolve`, {
-                method: "POST",
-                body: {
-                  folder_id: folderSelect.value,
-                  folder_name:
-                    folderSelect.options[folderSelect.selectedIndex].dataset.name,
-                  category: categorySelect.value || null,
-                  user_note: note.value || null,
-                },
-              });
-              loadReviews();
-              loadStatus();
-            },
-          },
-          "Guardar y enseñar",
-        ),
-      ),
+      el("div", { class: "review-line review-line-subject clamp-1" }, review.subject || "(sin asunto)"),
+      el("div", { class: "review-line review-line-snippet clamp-2" }, review.body_snippet || ""),
+      buildReviewRoutingRow(review, "list"),
+      buildReviewActionRow(review, "list"),
     );
-    list.append(card);
+    list.append(item);
   });
+}
+
+function renderReviewDetail(loading = false) {
+  const detailRoot = $("#review-detail");
+  detailRoot.innerHTML = "";
+  const review = getReviewById(reviewState.selectedId);
+  if (!review) {
+    detailRoot.append(el("p", { class: "hint review-detail-empty" }, "Selecciona un mensaje."));
+    return;
+  }
+  const detail = reviewState.details.get(review.id) || review;
+  detailRoot.append(
+    el(
+      "div",
+      { class: "review-detail-card" },
+      el("div", { class: "review-detail-line review-detail-from" }, formatReviewSender(review)),
+      el("div", { class: "review-detail-line review-detail-date" }, formatReviewDate(review.received_at)),
+      el("div", { class: "review-detail-line review-detail-subject" }, review.subject || "(sin asunto)"),
+      el("div", { class: "review-detail-line review-detail-snippet" }, review.body_snippet || ""),
+      buildReviewRoutingRow(review, "detail"),
+      buildReviewActionRow(review, "detail"),
+      el("div", { class: "review-detail-body-title" }, "Cuerpo completo"),
+      loading
+        ? el("div", { class: "review-detail-body review-detail-loading" }, "Cargando mensaje completo…")
+        : el("div", { class: "review-detail-body" }, detail.body_text || review.body_snippet || ""),
+      !loading && detail.body_error
+        ? el("p", { class: "hint review-detail-error" }, `No se pudo recuperar el cuerpo completo: ${detail.body_error}`)
+        : null,
+    ),
+  );
+}
+
+function buildReviewRoutingRow(review, variant) {
+  return el(
+    "div",
+    { class: `review-line review-routing-row ${variant}`.trim() },
+    el("span", { class: "review-chip review-chip-accent" }, `Sugerida: ${review.folder_name || "—"}`),
+    el("span", { class: "review-chip" }, `Confianza ${formatReviewConfidence(review.confidence)}`),
+    buildFolderSelect(review.id),
+    buildCategorySelect(review.id),
+  );
+}
+
+function buildReviewActionRow(review, variant) {
+  return el(
+    "div",
+    { class: `review-line review-actions-row ${variant}`.trim() },
+    buildReviewNoteInput(review.id),
+    buildReviewSaveButton(review.id),
+  );
+}
+
+function buildFolderSelect(reviewId) {
+  const form = reviewState.forms.get(reviewId);
+  const select = el(
+    "select",
+    {
+      class: "review-select review-folder-select",
+      "data-review-id": String(reviewId),
+      "data-field": "folderId",
+      onclick: (ev) => ev.stopPropagation(),
+      onchange: (ev) => {
+        setReviewFormField(reviewId, "folderId", ev.target.value);
+      },
+    },
+    ...reviewState.folders.map((folder) =>
+      el("option", { value: folder.id }, folder.full_name),
+    ),
+  );
+  if (form?.folderId) select.value = form.folderId;
+  return select;
+}
+
+function buildCategorySelect(reviewId) {
+  const form = reviewState.forms.get(reviewId);
+  const select = el(
+    "select",
+    {
+      class: "review-select review-category-select",
+      "data-review-id": String(reviewId),
+      "data-field": "category",
+      onclick: (ev) => ev.stopPropagation(),
+      onchange: (ev) => {
+        setReviewFormField(reviewId, "category", ev.target.value);
+      },
+    },
+    ...["", "personal", "work", "transactional", "marketing", "notification"].map((category) =>
+      el("option", { value: category }, category || "(sin categoría)"),
+    ),
+  );
+  select.value = form?.category || "";
+  return select;
+}
+
+function buildReviewNoteInput(reviewId) {
+  const form = reviewState.forms.get(reviewId);
+  const input = el("input", {
+    type: "text",
+    class: "review-note-input",
+    placeholder: "Nota en lenguaje natural (opcional)",
+    "data-review-id": String(reviewId),
+    "data-field": "note",
+    value: form?.note || "",
+    onclick: (ev) => ev.stopPropagation(),
+    oninput: (ev) => {
+      setReviewFormField(reviewId, "note", ev.target.value);
+    },
+  });
+  input.value = form?.note || "";
+  return input;
+}
+
+function buildReviewSaveButton(reviewId) {
+  return el(
+    "button",
+    {
+      class: "review-save-button",
+      onclick: async (ev) => {
+        ev.stopPropagation();
+        await saveReviewResolution(reviewId);
+      },
+    },
+    "Guardar y enseñar",
+  );
+}
+
+function setReviewFormField(reviewId, field, value) {
+  const form = reviewState.forms.get(reviewId);
+  if (!form) return;
+  form[field] = value;
+  syncReviewFormField(reviewId, field);
+}
+
+function syncReviewFormField(reviewId, field) {
+  const form = reviewState.forms.get(reviewId);
+  if (!form) return;
+  $$(`[data-review-id="${reviewId}"][data-field="${field}"]`).forEach((node) => {
+    if (document.activeElement === node) return;
+    node.value = form[field] || "";
+  });
+}
+
+async function saveReviewResolution(reviewId) {
+  const review = getReviewById(reviewId);
+  const form = reviewState.forms.get(reviewId);
+  if (!review || !form?.folderId) return;
+  const folder = reviewState.folders.find((entry) => entry.id === form.folderId);
+  await api(`/pending-reviews/${reviewId}/resolve`, {
+    method: "POST",
+    body: {
+      folder_id: form.folderId,
+      folder_name: folder?.full_name || review.folder_name || "",
+      category: form.category || null,
+      user_note: form.note || null,
+    },
+  });
+  reviewState.details.delete(reviewId);
+  reviewState.forms.delete(reviewId);
+  await loadReviews();
+  await loadStatus();
+}
+
+function formatReviewSender(review) {
+  const name = review.from_name || "";
+  const addr = review.from_addr || "";
+  return name ? `${name} <${addr}>` : addr || "(sin remitente)";
+}
+
+function formatReviewDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatReviewConfidence(value) {
+  if (value == null || value === "") return "—";
+  return Number(value).toFixed(2);
 }
 
 async function loadDrafts() {
@@ -246,7 +455,13 @@ async function loadTraining() {
     return;
   }
   samples.forEach((s) => {
-    const tagInput = el("input", { type: "text", value: s.tone_tag || "", placeholder: "ej. cercano" });
+    const selectedTone = s.tone_tag || s.suggested_tone_tag || "neutral";
+    const toneSelect = el(
+      "select",
+      { class: "tone-select" },
+      ...TONE_OPTIONS.map(([value, label]) => el("option", { value }, label)),
+    );
+    toneSelect.value = selectedTone;
     list.append(
       el(
         "div",
@@ -256,19 +471,27 @@ async function loadTraining() {
         el("div", { class: "snippet" }, (s.body_text || "").slice(0, 600)),
         el(
           "div",
+          { class: "tone-hint" },
+          s.tone_tag
+            ? `Tono guardado: ${toneLabel(s.tone_tag)}`
+            : `Sugerencia: ${toneLabel(s.suggested_tone_tag || "neutral")}`,
+        ),
+        el(
+          "div",
           { class: "review-actions" },
-          tagInput,
+          toneSelect,
           el(
             "button",
             {
               onclick: async () => {
                 await api(`/style-samples/${s.id}/tag`, {
                   method: "POST",
-                  body: { tone_tag: tagInput.value },
+                  body: { tone_tag: toneSelect.value },
                 });
+                await loadTraining();
               },
             },
-            "Etiquetar tono",
+            "Guardar tono",
           ),
         ),
       ),

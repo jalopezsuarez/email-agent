@@ -18,6 +18,16 @@ from ..services.sqlite_store import SQLiteStore
 from ..services.vector_store import VectorStore
 
 log = logging.getLogger(__name__)
+TONE_OPTIONS = [
+    "neutral",
+    "friendly",
+    "warm",
+    "formal",
+    "direct",
+    "brief",
+    "supportive",
+    "assertive",
+]
 
 _SYSTEM = (
     "You are drafting an email reply in the user's own voice. You are given "
@@ -48,6 +58,7 @@ class ResponderAgent:
         vectors: VectorStore,
         atendidos_folder_id: str,
         language_hint: str = "auto",
+        sent_from_iso: str | None = None,
     ):
         self.llm = llm
         self.graph = graph
@@ -55,6 +66,7 @@ class ResponderAgent:
         self.vectors = vectors
         self.atendidos_folder_id = atendidos_folder_id
         self.language_hint = language_hint
+        self.sent_from_iso = sent_from_iso
 
     # --------------------------------------------------------- learning
     def learn_from_sent_items(self, limit: int = 200) -> int:
@@ -62,32 +74,18 @@ class ResponderAgent:
 
         Returns the number of new samples ingested.
         """
-        messages = self.graph.list_sent(top=limit)
         new = 0
-        for msg in messages:
-            row = self._message_to_style_row(msg)
-            if not row:
-                continue
-            sample_id = self.sqlite.insert_style_sample(row)
-            if sample_id is None:
-                continue  # already stored
-            text = (
-                f"To: {row['recipient']}\nSubject: {row['subject']}\n\n{row['body_text']}"
+        if not self.sent_from_iso:
+            new += self._learn_from_messages(self.graph.list_sent(top=limit))
+            return new
+        page_size = max(25, min(limit, 100))
+        for since_iso, before_iso in self._sent_learning_windows():
+            messages = self.graph.iter_sent(
+                since_iso=since_iso,
+                before_iso=before_iso,
+                page_size=page_size,
             )
-            try:
-                vec = self.llm.embed([text])[0]
-            except Exception as exc:  # embedding failure shouldn't abort training
-                log.warning("Embedding failed for style sample: %s", exc)
-                continue
-            self.vectors.add_style(
-                sample_id=sample_id,
-                recipient=row["recipient"] or "",
-                recipient_domain=row["recipient_domain"] or "",
-                text=row["body_text"] or "",
-                vector=vec,
-                tone_tag=row.get("tone_tag"),
-            )
-            new += 1
+            new += self._learn_from_messages(messages)
         return new
 
     # --------------------------------------------------------- drafting
@@ -168,6 +166,75 @@ class ResponderAgent:
             profile_lines.append("Typical tone tags: " + ", ".join(profile["tone_tags"]))
         return "\n".join(profile_lines)
 
+    def suggest_tone_tag(self, sample: dict) -> str:
+        text = (sample.get("body_text") or "").strip()
+        lowered = text.lower()
+        greeting = (sample.get("greeting") or "").lower()
+        signoff = (sample.get("signoff") or "").lower()
+        word_count = int(sample.get("word_count") or 0)
+
+        if _contains_any(lowered, ["lo siento", "entiendo", "cuenta conmigo", "si te viene bien"]):
+            return "supportive"
+        if _contains_any(signoff, ["un abrazo", "abraz", "bes", "cari"]):
+            return "warm"
+        if _contains_any(greeting, ["estimado", "dear", "buenos dias", "buenas tardes"]) or _contains_any(
+            lowered,
+            ["adjunto", "cordialmente", "atentamente", "quedo a su disposicion", "usted"],
+        ):
+            return "formal"
+        if _contains_any(lowered, ["por favor", "necesito", "hay que", "haz", "revisa", "confirmo", "te confirmo"]):
+            if word_count <= 35:
+                return "direct"
+        if word_count and word_count <= 18:
+            return "brief"
+        if _contains_any(greeting, ["hola", "hey", "hi", "buenas"]) or _contains_any(
+            signoff,
+            ["gracias", "un saludo", "saludos", "best", "cheers"],
+        ):
+            return "friendly"
+        if _contains_any(lowered, ["debo", "tenemos que", "urgente", "necesitamos"]):
+            return "assertive"
+        return "neutral"
+
+    def _learn_from_messages(self, messages) -> int:
+        new = 0
+        for msg in messages:
+            row = self._message_to_style_row(msg)
+            if not row:
+                continue
+            sample_id = self.sqlite.insert_style_sample(row)
+            if sample_id is None:
+                continue
+            text = f"To: {row['recipient']}\nSubject: {row['subject']}\n\n{row['body_text']}"
+            try:
+                vec = self.llm.embed([text])[0]
+            except Exception as exc:  # embedding failure shouldn't abort training
+                log.warning("Embedding failed for style sample: %s", exc)
+                continue
+            self.vectors.add_style(
+                sample_id=sample_id,
+                recipient=row["recipient"] or "",
+                recipient_domain=row["recipient_domain"] or "",
+                text=row["body_text"] or "",
+                vector=vec,
+                tone_tag=row.get("tone_tag"),
+            )
+            new += 1
+        return new
+
+    def _sent_learning_windows(self) -> list[tuple[str | None, str | None]]:
+        if not self.sent_from_iso:
+            return [(None, None)]
+        min_sent_at, max_sent_at = self.sqlite.style_sent_range()
+        if not min_sent_at or not max_sent_at:
+            return [(self.sent_from_iso, None)]
+        windows: list[tuple[str | None, str | None]] = []
+        if self.sent_from_iso < min_sent_at:
+            windows.append((self.sent_from_iso, min_sent_at))
+        newer_since = max(self.sent_from_iso, max_sent_at)
+        windows.append((newer_since, None))
+        return windows
+
     @staticmethod
     def _message_to_style_row(msg: dict) -> dict | None:
         to_list = msg.get("toRecipients") or []
@@ -236,3 +303,7 @@ def _extract_signoff(text: str) -> str | None:
     ):
         return tail[:60]
     return None
+
+
+def _contains_any(text: str, needles: list[str]) -> bool:
+    return any(needle in text for needle in needles)

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,3 +68,21 @@ class AppConfig:
     @property
     def lancedb_path(self) -> str:
         return str(self.get("storage", "lancedb_path", default="data/lancedb"))
+
+    @property
+    def agent_inbox_from_iso(self) -> str | None:
+        return _parse_agent_from_date("AGENT_INBOX_FROM")
+
+    @property
+    def agent_sent_from_iso(self) -> str | None:
+        return _parse_agent_from_date("AGENT_SENT_FROM")
+
+
+def _parse_agent_from_date(name: str) -> str | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    if not re.fullmatch(r"\d{8}", raw):
+        raise ValueError(f"{name} must use YYYYMMDD, got {raw!r}.")
+    dt = datetime.strptime(raw, "%Y%m%d").replace(tzinfo=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")

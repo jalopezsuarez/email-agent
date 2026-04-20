@@ -168,6 +168,37 @@ class GraphClient:
             raise RuntimeError(f"Graph {r.request.method} {r.request.url}: {r.status_code} {r.text[:400]}")
         return r.json() if r.content else {}
 
+    def _iter_messages(
+        self,
+        path: str,
+        *,
+        select: str,
+        orderby: str,
+        filter_field: str,
+        since_iso: str | None = None,
+        before_iso: str | None = None,
+        page_size: int = 50,
+    ):
+        url: str | None = path
+        params: dict[str, Any] | None = {
+            "$top": page_size,
+            "$orderby": orderby,
+            "$select": select,
+        }
+        filters: list[str] = []
+        if since_iso:
+            filters.append(f"{filter_field} ge {since_iso}")
+        if before_iso:
+            filters.append(f"{filter_field} lt {before_iso}")
+        if filters:
+            params["$filter"] = " and ".join(filters)
+        while url:
+            data = self._ok(self._request("GET", url, params=params))
+            for message in data.get("value", []):
+                yield message
+            url = data.get("@odata.nextLink")
+            params = None
+
     # ---------------------------------------------------------- folders
     def list_folders(self) -> list[dict]:
         """Flat list of all mail folders (including nested)."""
@@ -235,6 +266,19 @@ class GraphClient:
         r = self._request("GET", "/me/mailFolders/Inbox/messages", params=params)
         return self._ok(r).get("value", [])
 
+    def iter_inbox(self, since_iso: str | None = None, page_size: int = 50):
+        yield from self._iter_messages(
+            "/me/mailFolders/Inbox/messages",
+            select=(
+                "id,subject,from,toRecipients,receivedDateTime,bodyPreview,"
+                "parentFolderId,isRead,conversationId"
+            ),
+            orderby="receivedDateTime desc",
+            filter_field="receivedDateTime",
+            since_iso=since_iso,
+            page_size=min(page_size, 50),
+        )
+
     def list_sent(self, top: int = 100) -> list[dict]:
         params = {
             "$top": min(top, 100),
@@ -245,6 +289,23 @@ class GraphClient:
         }
         r = self._request("GET", "/me/mailFolders/SentItems/messages", params=params)
         return self._ok(r).get("value", [])
+
+    def iter_sent(
+        self,
+        *,
+        since_iso: str | None = None,
+        before_iso: str | None = None,
+        page_size: int = 100,
+    ):
+        yield from self._iter_messages(
+            "/me/mailFolders/SentItems/messages",
+            select="id,subject,toRecipients,sentDateTime,bodyPreview,body,conversationId",
+            orderby="sentDateTime desc",
+            filter_field="sentDateTime",
+            since_iso=since_iso,
+            before_iso=before_iso,
+            page_size=min(page_size, 100),
+        )
 
     def get_message(self, message_id: str) -> dict:
         r = self._request("GET", f"/me/messages/{message_id}")
