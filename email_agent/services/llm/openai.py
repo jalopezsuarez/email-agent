@@ -9,7 +9,14 @@ from .base import LLMError, LLMProvider
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
-    def __init__(self, api_key: str, model: str, embedding_model: str, timeout: float = 60.0):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        embedding_model: str,
+        base_url: str = "https://api.openai.com/v1",
+        timeout: float = 60.0,
+    ):
         if not api_key:
             raise LLMError("OPENAI_API_KEY missing")
         self.api_key = api_key
@@ -18,7 +25,7 @@ class OpenAIProvider(LLMProvider):
         self._client = httpx.Client(
             timeout=timeout,
             headers={"Authorization": f"Bearer {api_key}"},
-            base_url="https://api.openai.com/v1",
+            base_url=base_url.rstrip("/"),
         )
 
     def complete(

@@ -11,6 +11,7 @@ class LLMError(RuntimeError):
 
 class LLMProvider(ABC):
     name: str = "base"
+    supports_embeddings: bool = True
 
     @abstractmethod
     def complete(

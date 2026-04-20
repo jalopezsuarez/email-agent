@@ -37,7 +37,7 @@ Outlook →  │ EmailCoordinator    │  polls INBOX, dispatches, logs
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
-# Fill MS_CLIENT_ID and GEMINI_API_KEY (free tier) in .env
+# Fill MS_CLIENT_ID and the API key for the LLM provider you choose in .env
 python main.py --port 8765
 ```
 
@@ -50,7 +50,18 @@ Configure in `config.yaml` (or override from the panel):
 
 - `gemini` (default, free tier)
 - `openai`
+- `claude`
 - `ollama` (local, `http://localhost:11434`)
+
+`openai`, `claude`, and `gemini` now accept explicit `base_url` and `api_key`
+configuration. `Claude` does not offer embeddings, so when you use it for
+generation you must pair it with `llm.embedding_provider` set to `openai`,
+`gemini`, or `ollama`.
+
+You can also override the active text and embeddings setup directly from `.env`
+with `SERVICE_LLM_*` and `SERVICE_EMBEDDINGS_*` variables. Provider selection
+stays in `config.yaml`; the env overrides are only for `base_url`, `api_key`,
+`model`, and similar connection settings.
 
 Only install the SDKs you use; all providers go through `httpx` so no SDK
 is strictly required.

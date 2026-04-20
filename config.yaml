@@ -6,29 +6,68 @@ server:
   port: 8765
 
 graph:
-  # Microsoft Entra app registration with "Personal Microsoft accounts + Work/School" support.
-  # Create one at https://portal.azure.com > App registrations. Only Delegated permissions.
+  # Microsoft Entra app registration. For single-tenant corporate apps, use the
+  # verified tenant domain or tenant GUID here.
   client_id: ${MS_CLIENT_ID}
-  tenant: consumers              # 'consumers' = personal MSAs; 'common' for both
+  tenant: unicagroup.es
   # NOTE: Mail.Send is deliberately NOT requested. Drafts-only by design.
   scopes:
     - Mail.ReadWrite
     - MailboxSettings.ReadWrite
-    - offline_access
   token_cache_path: data/msal_cache.bin
   atendidos_folder_name: "Atendidos IA"
 
 llm:
-  # provider: gemini | openai | ollama
+  # provider: gemini | openai | claude | ollama
+  # embedding_provider is optional when the selected provider already supports
+  # embeddings. Claude does not, so pair it with openai, gemini, or ollama.
   provider: gemini
+  embedding_provider: gemini
+
+  # Example OpenAI:
+  # provider: openai
+  # embedding_provider: openai
+  # openai:
+  #   base_url: https://api.openai.com/v1
+  #   api_key: ${OPENAI_API_KEY}
+  #   model: gpt-4o-mini
+  #   embedding_model: text-embedding-3-small
+
+  # Example Claude:
+  # provider: claude
+  # embedding_provider: gemini
+  # claude:
+  #   base_url: https://api.anthropic.com/v1
+  #   api_key: ${ANTHROPIC_API_KEY}
+  #   api_version: 2023-06-01
+  #   model: claude-sonnet-4-20250514
+
+  # Example Gemini:
+  # provider: gemini
+  # embedding_provider: gemini
+  # gemini:
+  #   base_url: https://generativelanguage.googleapis.com/v1beta
+  #   api_key: ${GEMINI_API_KEY}
+  #   model: gemini-2.5-flash
+  #   embedding_model: gemini-embedding-001
+  #   embedding_output_dimensions: 768
+
   gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta
     api_key: ${GEMINI_API_KEY}
-    model: gemini-1.5-flash
-    embedding_model: text-embedding-004
+    model: gemini-2.5-flash
+    embedding_model: gemini-embedding-001
+    embedding_output_dimensions: 768
   openai:
+    base_url: https://api.openai.com/v1
     api_key: ${OPENAI_API_KEY}
     model: gpt-4o-mini
     embedding_model: text-embedding-3-small
+  claude:
+    base_url: https://api.anthropic.com/v1
+    api_key: ${ANTHROPIC_API_KEY}
+    api_version: 2023-06-01
+    model: claude-sonnet-4-20250514
   ollama:
     base_url: http://localhost:11434
     model: llama3

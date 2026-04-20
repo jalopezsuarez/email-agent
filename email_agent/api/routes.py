@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 
+from ..services.graph_client import GraphAuthError
 from .schemas import (
     ApproveDraftBody,
     ConfigUpdateBody,
@@ -24,8 +25,12 @@ def build_router(app_state) -> APIRouter:
     @router.get("/status")
     def status():
         stats = app_state.sqlite.decision_stats()
+        graph = app_state.graph_status()
         return {
-            "graph_connected": app_state.graph.is_authenticated(),
+            "graph_connected": graph["connected"],
+            "graph_pending": graph["pending"],
+            "graph_message": graph["message"],
+            "graph_error": graph["error"],
             "llm_provider": app_state.llm.name,
             "classifier_threshold": app_state.classifier.threshold,
             "personal_threshold": app_state.coordinator.personal_threshold,
@@ -34,8 +39,16 @@ def build_router(app_state) -> APIRouter:
             "style_samples": app_state.sqlite.style_samples_count(),
         }
 
+    @router.post("/graph/connect")
+    def connect_graph():
+        return app_state.start_graph_connect()
+
     @router.post("/scan-now")
     def scan_now():
+        try:
+            app_state.ensure_graph_ready()
+        except GraphAuthError as exc:
+            raise HTTPException(409, str(exc))
         return app_state.coordinator.run_cycle()
 
     @router.get("/folders")
@@ -130,6 +143,10 @@ def build_router(app_state) -> APIRouter:
 
     @router.post("/train/style")
     def train_style():
+        try:
+            app_state.ensure_graph_ready()
+        except GraphAuthError as exc:
+            raise HTTPException(409, str(exc))
         new = app_state.responder.learn_from_sent_items(
             limit=app_state.cfg.get("responder", "sent_items_learning_batch", default=200)
         )

@@ -23,6 +23,7 @@ from .safety import assert_safe_path
 
 log = logging.getLogger(__name__)
 _GRAPH = "https://graph.microsoft.com/v1.0"
+_RESERVED_SCOPES = {"openid", "profile", "offline_access"}
 
 
 class GraphAuthError(RuntimeError):
@@ -40,8 +41,12 @@ class GraphClient:
     ):
         if not client_id:
             raise GraphAuthError("MS_CLIENT_ID is not configured.")
-        # Defensive: block Mail.Send even if mis-configured.
-        scopes = [s for s in scopes if s.lower() != "mail.send"]
+        # Defensive: block Mail.Send and OIDC reserved scopes even if mis-configured.
+        # MSAL manages reserved scopes itself and rejects them in initiate_device_flow().
+        scopes = [
+            s for s in scopes
+            if s.lower() != "mail.send" and s.lower() not in _RESERVED_SCOPES
+        ]
         self._client_id = client_id
         self._authority = f"https://login.microsoftonline.com/{tenant}"
         self._scopes = list(scopes)
@@ -73,26 +78,60 @@ class GraphClient:
         return cache
 
     def ensure_token(self, *, interactive: bool = True) -> str:
-        # Try silent first.
+        try:
+            return self.acquire_cached_token()
+        except GraphAuthError:
+            if not interactive:
+                raise
+        flow = self.initiate_device_flow()
+        print("\n=== Microsoft 365 login ===")
+        print(flow["message"])
+        print("===========================\n")
+        return self.complete_device_flow(flow)
+
+    def acquire_cached_token(self) -> str:
         accounts = self._app.get_accounts()
         result: dict | None = None
         if accounts:
             result = self._app.acquire_token_silent(self._scopes, account=accounts[0])
         if not result:
-            if not interactive:
-                raise GraphAuthError("No cached token; call ensure_token interactively.")
-            flow = self._app.initiate_device_flow(scopes=self._scopes)
-            if "user_code" not in flow:
-                raise GraphAuthError(f"Device flow failed: {flow}")
-            print("\n=== Microsoft 365 login ===")
-            print(flow["message"])
-            print("===========================\n")
-            result = self._app.acquire_token_by_device_flow(flow)
+            raise GraphAuthError("No cached token; start Microsoft login.")
+        return self._consume_token_result(result)
+
+    def initiate_device_flow(self) -> dict:
+        flow = self._app.initiate_device_flow(scopes=self._scopes)
+        if "user_code" not in flow:
+            raise GraphAuthError(self._format_device_flow_error(flow))
+        return flow
+
+    def complete_device_flow(self, flow: dict) -> str:
+        result = self._app.acquire_token_by_device_flow(flow)
+        return self._consume_token_result(result)
+
+    def _consume_token_result(self, result: dict) -> str:
         if "access_token" not in result:
             raise GraphAuthError(f"Auth failed: {result.get('error_description')}")
         self._persist_cache()
         self._token = result["access_token"]
         return self._token
+
+    def _format_device_flow_error(self, flow: dict) -> str:
+        code = str(flow.get("error_codes", [""])[0] or "")
+        desc = flow.get("error_description", "Unknown device-flow error.")
+        if code == "700016" and self._authority.endswith("/consumers"):
+            return (
+                "MS_CLIENT_ID is not valid for personal Microsoft accounts. "
+                "Use an app registration whose Supported account types include "
+                "'Personal Microsoft accounts', or switch graph.tenant to a work/school "
+                "tenant if this mailbox is not personal."
+            )
+        if code == "50059":
+            return (
+                "The configured authority does not identify a valid tenant for device-code "
+                "login. Use 'consumers' for personal accounts, or 'organizations' / a tenant "
+                "ID/domain for work and school accounts."
+            )
+        return f"Device flow failed: {desc}"
 
     def is_authenticated(self) -> bool:
         try:

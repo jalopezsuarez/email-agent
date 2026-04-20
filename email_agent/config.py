@@ -30,8 +30,8 @@ class AppConfig:
 
     @classmethod
     def load(cls, path: str | Path = "config.yaml") -> "AppConfig":
-        load_dotenv(override=False)
         p = Path(path)
+        load_dotenv(dotenv_path=p.with_name(".env"), override=False)
         with p.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         return cls(raw=_expand(data), path=p)

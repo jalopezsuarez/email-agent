@@ -52,10 +52,17 @@ async function loadStatus() {
       s.stats.avg_classifier_confidence != null
         ? s.stats.avg_classifier_confidence
         : "—";
-    pill.textContent = s.graph_connected
-      ? `Graph ✓ · ${s.llm_provider} · :${s.port}`
-      : `Graph desconectado · ${s.llm_provider}`;
-    pill.className = s.graph_connected ? "ok" : "warn";
+    if (s.graph_connected) {
+      pill.textContent = `Graph ✓ · ${s.llm_provider} · :${s.port}`;
+      pill.className = "ok";
+    } else if (s.graph_pending) {
+      pill.textContent = `Graph esperando login · ${s.llm_provider}`;
+      pill.className = "warn";
+    } else {
+      pill.textContent = `Graph desconectado · ${s.llm_provider}`;
+      pill.className = "warn";
+    }
+    renderGraphStatus(s);
     // Populate form with current runtime values
     $$("#config-form [name]").forEach((f) => {
       const key = f.name;
@@ -70,6 +77,27 @@ async function loadStatus() {
     pill.textContent = "Error: " + e.message;
     pill.className = "err";
   }
+}
+
+function renderGraphStatus(status) {
+  const btn = $("#btn-graph-connect");
+  const result = $("#graph-connect-result");
+  const help = $("#graph-help");
+  if (status.graph_connected) {
+    btn.style.display = "none";
+    btn.disabled = false;
+    btn.textContent = "Conectar Microsoft";
+    result.textContent = "";
+    help.textContent = status.graph_message || "Graph conectado.";
+    return;
+  }
+  btn.style.display = "";
+  btn.disabled = Boolean(status.graph_pending);
+  btn.textContent = status.graph_pending ? "Esperando login..." : "Conectar Microsoft";
+  result.textContent = status.graph_pending
+    ? "Abre Microsoft y completa el login."
+    : "";
+  help.textContent = status.graph_error || status.graph_message || "";
 }
 
 async function loadReviews() {
@@ -272,19 +300,37 @@ $("#config-form").addEventListener("submit", async (ev) => {
   loadStatus();
 });
 
+$("#btn-graph-connect").addEventListener("click", async () => {
+  $("#graph-connect-result").textContent = "Iniciando login…";
+  try {
+    await api("/graph/connect", { method: "POST" });
+    await loadStatus();
+  } catch (e) {
+    $("#graph-connect-result").textContent = e.message;
+  }
+});
+
 $("#btn-scan").addEventListener("click", async () => {
   $("#scan-result").textContent = "Escaneando…";
-  const r = await api("/scan-now", { method: "POST" });
-  $("#scan-result").textContent =
-    `Procesados ${r.processed} · clasificados ${r.classified} · pendientes ${r.pending_review} · borradores ${r.drafted}`;
-  loadStatus();
+  try {
+    const r = await api("/scan-now", { method: "POST" });
+    $("#scan-result").textContent =
+      `Procesados ${r.processed} · clasificados ${r.classified} · pendientes ${r.pending_review} · borradores ${r.drafted}`;
+    loadStatus();
+  } catch (e) {
+    $("#scan-result").textContent = e.message;
+  }
 });
 
 $("#btn-train-style").addEventListener("click", async () => {
   $("#train-result").textContent = "Analizando…";
-  const r = await api("/train/style", { method: "POST" });
-  $("#train-result").textContent = `Nuevas muestras: ${r.new_samples}`;
-  loadTraining();
+  try {
+    const r = await api("/train/style", { method: "POST" });
+    $("#train-result").textContent = `Nuevas muestras: ${r.new_samples}`;
+    loadTraining();
+  } catch (e) {
+    $("#train-result").textContent = e.message;
+  }
 });
 
 function loadTab(tab) {
@@ -297,4 +343,4 @@ function loadTab(tab) {
 
 // Initial load
 loadStatus();
-setInterval(loadStatus, 20000);
+setInterval(loadStatus, 5000);

@@ -40,13 +40,10 @@ def create_app(cfg_path: str = "config.yaml") -> tuple[FastAPI, AppState, Backgr
 
     @app.on_event("startup")
     def _startup() -> None:
-        try:
-            state.bootstrap()
-        except Exception as exc:
+        if not state.try_bootstrap(interactive=False):
             log.warning(
-                "Graph bootstrap failed (%s). You can still open the panel and "
-                "re-authenticate from the console.",
-                exc,
+                "Graph bootstrap skipped at startup. The panel will stay available "
+                "and Graph can be connected later from the UI.",
             )
 
     app.include_router(build_router(state))
@@ -87,6 +84,9 @@ def create_app(cfg_path: str = "config.yaml") -> tuple[FastAPI, AppState, Backgr
 
 
 def _run_cycle_safely(state: AppState) -> None:
+    if not state.graph_status()["connected"]:
+        log.info("Scheduled cycle skipped: Graph is not connected yet.")
+        return
     try:
         summary = state.coordinator.run_cycle()
         log.info("Cycle: %s", summary)
