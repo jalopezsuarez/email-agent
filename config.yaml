@@ -1,0 +1,93 @@
+# Email-Agent configuration
+# Any key can be overridden at runtime from the web panel (stored in SQLite `config` table).
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+graph:
+  # Microsoft Entra app registration. For single-tenant corporate apps, use the
+  # verified tenant domain or tenant GUID here.
+  client_id: ${MS_CLIENT_ID}
+  tenant: unicagroup.es
+  # NOTE: Mail.Send is deliberately NOT requested. Drafts-only by design.
+  scopes:
+    - Mail.ReadWrite
+    - MailboxSettings.ReadWrite
+  token_cache_path: data/msal_cache.bin
+  atendidos_folder_name: "Atendidos IA"
+
+llm:
+  # provider: gemini | openai | claude | ollama
+  # embedding_provider is optional when the selected provider already supports
+  # embeddings. Claude does not, so pair it with openai, gemini, or ollama.
+  provider: gemini
+  embedding_provider: gemini
+
+  # Example OpenAI:
+  # provider: openai
+  # embedding_provider: openai
+  # openai:
+  #   base_url: https://api.openai.com/v1
+  #   api_key: ${OPENAI_API_KEY}
+  #   model: gpt-4o-mini
+  #   embedding_model: text-embedding-3-small
+
+  # Example Claude:
+  # provider: claude
+  # embedding_provider: gemini
+  # claude:
+  #   base_url: https://api.anthropic.com/v1
+  #   api_key: ${ANTHROPIC_API_KEY}
+  #   api_version: 2023-06-01
+  #   model: claude-sonnet-4-20250514
+
+  # Example Gemini:
+  # provider: gemini
+  # embedding_provider: gemini
+  # gemini:
+  #   base_url: https://generativelanguage.googleapis.com/v1beta
+  #   api_key: ${GEMINI_API_KEY}
+  #   model: gemini-2.5-flash
+  #   embedding_model: gemini-embedding-001
+  #   embedding_output_dimensions: 768
+
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    api_key: ${GEMINI_API_KEY}
+    model: gemini-2.5-flash
+    embedding_model: gemini-embedding-001
+    embedding_output_dimensions: 768
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+    model: gpt-4o-mini
+    embedding_model: text-embedding-3-small
+  claude:
+    base_url: https://api.anthropic.com/v1
+    api_key: ${ANTHROPIC_API_KEY}
+    api_version: 2023-06-01
+    model: claude-sonnet-4-20250514
+  ollama:
+    base_url: http://localhost:11434
+    model: llama3
+    embedding_model: nomic-embed-text
+
+polling:
+  interval_seconds: 120
+  inbox_batch_size: 25
+
+classifier:
+  # Initial threshold is intentionally conservative: only auto-classify when highly confident.
+  confidence_threshold: 0.90
+  top_k_candidate_folders: 6
+
+responder:
+  # The responder NEVER sends email. It only writes drafts into "Atendidos IA".
+  sent_items_learning_batch: 200
+  personal_confidence_threshold: 0.80
+  draft_language: auto
+
+storage:
+  sqlite_path: data/email_agent.db
+  lancedb_path: data/lancedb
