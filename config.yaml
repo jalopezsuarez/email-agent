@@ -1,0 +1,54 @@
+# Email-Agent configuration
+# Any key can be overridden at runtime from the web panel (stored in SQLite `config` table).
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+graph:
+  # Microsoft Entra app registration with "Personal Microsoft accounts + Work/School" support.
+  # Create one at https://portal.azure.com > App registrations. Only Delegated permissions.
+  client_id: ${MS_CLIENT_ID}
+  tenant: consumers              # 'consumers' = personal MSAs; 'common' for both
+  # NOTE: Mail.Send is deliberately NOT requested. Drafts-only by design.
+  scopes:
+    - Mail.ReadWrite
+    - MailboxSettings.ReadWrite
+    - offline_access
+  token_cache_path: data/msal_cache.bin
+  atendidos_folder_name: "Atendidos IA"
+
+llm:
+  # provider: gemini | openai | ollama
+  provider: gemini
+  gemini:
+    api_key: ${GEMINI_API_KEY}
+    model: gemini-1.5-flash
+    embedding_model: text-embedding-004
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    model: gpt-4o-mini
+    embedding_model: text-embedding-3-small
+  ollama:
+    base_url: http://localhost:11434
+    model: llama3
+    embedding_model: nomic-embed-text
+
+polling:
+  interval_seconds: 120
+  inbox_batch_size: 25
+
+classifier:
+  # Initial threshold is intentionally conservative: only auto-classify when highly confident.
+  confidence_threshold: 0.90
+  top_k_candidate_folders: 6
+
+responder:
+  # The responder NEVER sends email. It only writes drafts into "Atendidos IA".
+  sent_items_learning_batch: 200
+  personal_confidence_threshold: 0.80
+  draft_language: auto
+
+storage:
+  sqlite_path: data/email_agent.db
+  lancedb_path: data/lancedb

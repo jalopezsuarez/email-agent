@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Email-Agent · Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Email-Agent</h1>
+      <nav>
+        <button data-tab="dashboard" class="active">Dashboard</button>
+        <button data-tab="reviews">Pendientes</button>
+        <button data-tab="drafts">Borradores</button>
+        <button data-tab="training">Entrenamiento</button>
+        <button data-tab="config">Configuración</button>
+      </nav>
+      <div id="status-pill">…</div>
+    </header>
+
+    <main>
+      <section id="dashboard" class="tab active">
+        <div class="cards">
+          <div class="card"><h3>Total correos</h3><p id="kpi-total">—</p></div>
+          <div class="card"><h3>Clasificados</h3><p id="kpi-classified">—</p></div>
+          <div class="card"><h3>Pendientes</h3><p id="kpi-pending">—</p></div>
+          <div class="card"><h3>Borradores</h3><p id="kpi-drafts">—</p></div>
+          <div class="card"><h3>Muestras de estilo</h3><p id="kpi-style">—</p></div>
+          <div class="card"><h3>Confianza media</h3><p id="kpi-conf">—</p></div>
+        </div>
+        <div class="row">
+          <button id="btn-scan">Escanear ahora</button>
+          <span id="scan-result"></span>
+        </div>
+        <div class="safety-banner">
+          Sistema configurado en modo <strong>sólo borradores</strong>. El envío
+          de correo está físicamente deshabilitado (scope <code>Mail.Send</code>
+          no solicitado; guardia anti-envío activa).
+        </div>
+      </section>
+
+      <section id="reviews" class="tab">
+        <h2>Pendientes de clasificación</h2>
+        <p class="hint">
+          Escoge la carpeta correcta. Tu elección se guardará como ejemplo
+          con peso alto para futuras clasificaciones. Puedes añadir una nota
+          en lenguaje natural para reforzar el aprendizaje.
+        </p>
+        <div id="reviews-list"></div>
+      </section>
+
+      <section id="drafts" class="tab">
+        <h2>Borradores en «Atendidos IA»</h2>
+        <p class="hint">
+          Edita y guarda. El botón «Marcar aprobado» sólo actualiza el estado
+          local. El envío final se realiza manualmente desde Outlook.
+        </p>
+        <div id="drafts-list"></div>
+      </section>
+
+      <section id="training" class="tab">
+        <h2>Entrenamiento de estilo</h2>
+        <div class="row">
+          <button id="btn-train-style">Analizar Sent Items</button>
+          <span id="train-result"></span>
+        </div>
+        <div id="style-samples"></div>
+      </section>
+
+      <section id="config" class="tab">
+        <h2>Configuración</h2>
+        <div id="config-view"></div>
+        <h3>Ajustes runtime</h3>
+        <form id="config-form">
+          <label>classifier.threshold
+            <input name="classifier.threshold" type="number" step="0.01" min="0" max="1" />
+          </label>
+          <label>responder.personal_confidence_threshold
+            <input name="responder.personal_confidence_threshold" type="number" step="0.01" min="0" max="1" />
+          </label>
+          <label>polling.interval_seconds
+            <input name="polling.interval_seconds" type="number" min="30" />
+          </label>
+          <label>llm.provider
+            <select name="llm.provider">
+              <option value="gemini">gemini</option>
+              <option value="openai">openai</option>
+              <option value="ollama">ollama</option>
+            </select>
+          </label>
+          <button type="submit">Guardar</button>
+        </form>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
