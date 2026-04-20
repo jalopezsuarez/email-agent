@@ -13,7 +13,6 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from email.utils import parseaddr
 
 from ..services.graph_client import GraphClient
 from ..services.llm import LLMProvider
@@ -31,7 +30,11 @@ _CATEGORY_SYSTEM = (
     "'personal' means a human being writing to the user individually and "
     "expecting a written reply (friends, family, direct 1:1 messages). "
     "Newsletters, receipts, automated alerts, calendar invites, job apps, "
-    "and mass-marketing are NEVER personal."
+    "and mass-marketing are NEVER personal. "
+    "When historical outgoing replies are provided, treat them as evidence of "
+    "human correspondence and the user's reply style, but not as proof of "
+    "'personal': repeated replies to coworkers, vendors or support addresses "
+    "can still be 'work' or 'transactional'."
 )
 
 
@@ -171,7 +174,14 @@ class CoordinatorAgent:
         )
 
     def _categorise(self, email_row: dict) -> tuple[str, float, str]:
+        outbound_style = self.sqlite.style_profile(limit=20)
+        correspondence = self.sqlite.correspondence_reference(email_row.get("from_addr"), limit=3)
         user_prompt = (
+            "== User reply style baseline ==\n"
+            f"{self._style_reference_text(outbound_style)}\n\n"
+            "== Historical outgoing reply reference ==\n"
+            f"{self._correspondence_reference_text(correspondence)}\n\n"
+            "== Incoming email ==\n"
             f"Subject: {email_row.get('subject') or ''}\n"
             f"From: {email_row.get('from_name')} <{email_row.get('from_addr')}>\n"
             f"Body preview:\n{email_row.get('body_snippet') or ''}\n\n"
@@ -189,3 +199,67 @@ class CoordinatorAgent:
         conf = float(data.get("confidence") or 0.0)
         reason = str(data.get("reason") or "")
         return cat, conf, reason
+
+    @staticmethod
+    def _style_reference_text(profile: dict) -> str:
+        if not profile.get("sample_count"):
+            return "No Sent Items samples are available yet."
+        lines = [f"Stored Sent Items samples: {profile['sample_count']}"]
+        if profile.get("avg_word_count") is not None:
+            lines.append(f"Typical reply length: ~{profile['avg_word_count']} words.")
+        if profile.get("greetings"):
+            lines.append("Common greetings: " + ", ".join(profile["greetings"]))
+        if profile.get("signoffs"):
+            lines.append("Common sign-offs: " + ", ".join(profile["signoffs"]))
+        if profile.get("tone_tags"):
+            lines.append("Tagged tones: " + ", ".join(profile["tone_tags"]))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _correspondence_reference_text(reference: dict) -> str:
+        if reference.get("match_scope") == "none":
+            return "No previous outgoing replies found for this sender or domain."
+        lines = [
+            f"Match scope: {reference['match_scope']}",
+            f"Exact replies to this sender: {reference['exact_reply_count']}",
+            f"Replies to this sender domain: {reference['domain_reply_count']}",
+        ]
+        if reference.get("last_replied_at"):
+            lines.append(f"Last reply sent at: {reference['last_replied_at']}")
+        if reference.get("avg_word_count") is not None:
+            lines.append(
+                f"Average length of matching replies: ~{reference['avg_word_count']} words."
+            )
+        if reference.get("greetings"):
+            lines.append("Observed greetings: " + ", ".join(reference["greetings"]))
+        if reference.get("signoffs"):
+            lines.append("Observed sign-offs: " + ", ".join(reference["signoffs"]))
+        if reference.get("tone_tags"):
+            lines.append("Observed tone tags: " + ", ".join(reference["tone_tags"]))
+        if reference.get("recent_subjects"):
+            lines.append("Recent outbound subjects: " + " | ".join(reference["recent_subjects"]))
+        if reference.get("sample_recipients") and reference.get("match_scope") == "domain":
+            lines.append(
+                "Known recipients in this domain: "
+                + ", ".join(reference["sample_recipients"])
+            )
+        examples = reference.get("example_replies") or []
+        if examples:
+            rendered = "\n\n".join(
+                (
+                    f"(To {example.get('recipient') or 'unknown'} | "
+                    f"{example.get('sent_at') or 'unknown date'} | "
+                    f"Subject: {example.get('subject') or '(no subject)'})\n"
+                    f"{CoordinatorAgent._trim_text(example.get('body_text') or '', 350)}"
+                )
+                for example in examples
+            )
+            lines.append("Example outgoing replies:\n" + rendered)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _trim_text(text: str, limit: int) -> str:
+        clean = " ".join((text or "").split())
+        if len(clean) <= limit:
+            return clean
+        return clean[: limit - 3].rstrip() + "..."

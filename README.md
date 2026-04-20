@@ -2,7 +2,10 @@
 
 Three cooperating Python agents that read a personal Microsoft 365 inbox,
 classify mail into the user's existing folder structure, and draft replies
-imitating the user's own writing style. **The system never sends email.**
+imitating the user's own writing style. Sent Items are also mined as a prior
+for the kinds of correspondents the user actually replies to, so the
+"personal" detector can lean on real reply history instead of prompt-only
+guessing. **The system never sends email.**
 
 ```
            ┌─────────────────────┐
@@ -12,8 +15,8 @@ Outlook →  │ EmailCoordinator    │  polls INBOX, dispatches, logs
              ▼             ▼
   ┌──────────────────┐ ┌──────────────────┐
   │ EmailClassifier  │ │ EmailResponder   │
-  │ (SQLite +        │ │ (learns tone     │
-  │  LanceDB)        │ │  from Sent Items)│
+  │ (SQLite +        │ │ (learns tone +   │
+  │  LanceDB)        │ │  reply history)  │
   └──────────────────┘ └──────────────────┘
                            │
                            ▼
@@ -76,6 +79,10 @@ below is parked in *Pendientes* for you to resolve manually. Every manual
 resolution is stored as a high-weight feedback sample in LanceDB so that
 future runs become progressively more accurate. Lower the threshold from
 the Configuration tab when the dashboard shows consistent high confidence.
+
+The Sent Items training step now helps in two places: it improves reply
+drafting and it gives the personal/work detector historical evidence about
+which senders or domains the user already exchanges direct replies with.
 
 ## Tests
 

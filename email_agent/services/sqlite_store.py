@@ -278,10 +278,11 @@ class SQLiteStore:
     def list_style_samples_for(self, recipient: str | None, limit: int = 5) -> list[dict]:
         with self._conn() as c:
             if recipient:
+                recipient_addr = _normalise_email(recipient)
                 rows = c.execute(
-                    "SELECT * FROM style_samples WHERE recipient = ? "
+                    "SELECT * FROM style_samples WHERE lower(recipient) = ? "
                     "ORDER BY sent_at DESC LIMIT ?",
-                    (recipient, limit),
+                    (recipient_addr, limit),
                 ).fetchall()
                 if rows:
                     return [dict(r) for r in rows]
@@ -290,6 +291,86 @@ class SQLiteStore:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def style_profile(self, recipient: str | None = None, limit: int = 30) -> dict[str, Any]:
+        rows = self.list_style_samples_for(recipient, limit=limit)
+        return _summarise_style_rows(rows, examples_limit=3)
+
+    def correspondence_reference(self, sender: str | None, limit: int = 3) -> dict[str, Any]:
+        sender_addr = _normalise_email(sender)
+        sender_domain = sender_addr.split("@", 1)[-1] if sender_addr and "@" in sender_addr else None
+        if not sender_addr or not sender_domain:
+            return {
+                "sender": sender_addr,
+                "sender_domain": sender_domain,
+                "match_scope": "none",
+                "exact_reply_count": 0,
+                "domain_reply_count": 0,
+                "last_replied_at": None,
+                "avg_word_count": None,
+                "tone_tags": [],
+                "greetings": [],
+                "signoffs": [],
+                "recent_subjects": [],
+                "sample_recipients": [],
+                "example_replies": [],
+            }
+
+        with self._conn() as c:
+            exact_rows = [
+                dict(r)
+                for r in c.execute(
+                    "SELECT * FROM style_samples WHERE lower(recipient) = ? "
+                    "ORDER BY sent_at DESC LIMIT ?",
+                    (sender_addr, limit),
+                ).fetchall()
+            ]
+            exact_count = int(
+                c.execute(
+                    "SELECT COUNT(*) AS n FROM style_samples WHERE lower(recipient) = ?",
+                    (sender_addr,),
+                ).fetchone()["n"]
+            )
+            domain_rows = [
+                dict(r)
+                for r in c.execute(
+                    "SELECT * FROM style_samples WHERE lower(recipient_domain) = ? "
+                    "ORDER BY sent_at DESC LIMIT ?",
+                    (sender_domain, limit),
+                ).fetchall()
+            ]
+            domain_count = int(
+                c.execute(
+                    "SELECT COUNT(*) AS n FROM style_samples WHERE lower(recipient_domain) = ?",
+                    (sender_domain,),
+                ).fetchone()["n"]
+            )
+
+        reference_rows = exact_rows or domain_rows
+        summary = _summarise_style_rows(reference_rows, examples_limit=limit)
+        return {
+            "sender": sender_addr,
+            "sender_domain": sender_domain,
+            "match_scope": "exact" if exact_rows else "domain" if domain_rows else "none",
+            "exact_reply_count": exact_count,
+            "domain_reply_count": domain_count,
+            "last_replied_at": summary["last_sent_at"],
+            "avg_word_count": summary["avg_word_count"],
+            "tone_tags": summary["tone_tags"],
+            "greetings": summary["greetings"],
+            "signoffs": summary["signoffs"],
+            "recent_subjects": summary["recent_subjects"],
+            "sample_recipients": summary["sample_recipients"],
+            "example_replies": [
+                {
+                    "recipient": row.get("recipient") or "",
+                    "subject": row.get("subject") or "",
+                    "sent_at": row.get("sent_at") or "",
+                    "body_text": row.get("body_text") or "",
+                }
+                for row in summary["examples"]
+            ],
+        }
 
     def style_samples_count(self) -> int:
         with self._conn() as c:
@@ -356,3 +437,42 @@ class SQLiteStore:
         with self._conn() as c:
             rows = c.execute("SELECT key, value FROM config_kv").fetchall()
             return {r["key"]: r["value"] for r in rows}
+
+
+def _summarise_style_rows(rows: list[dict[str, Any]], *, examples_limit: int = 3) -> dict[str, Any]:
+    word_counts = [int(r.get("word_count") or 0) for r in rows if r.get("word_count") not in (None, "")]
+    return {
+        "sample_count": len(rows),
+        "last_sent_at": rows[0].get("sent_at") if rows else None,
+        "avg_word_count": round(sum(word_counts) / len(word_counts)) if word_counts else None,
+        "greetings": _unique_non_empty([r.get("greeting") for r in rows], limit=5),
+        "signoffs": _unique_non_empty([r.get("signoff") for r in rows], limit=5),
+        "tone_tags": _unique_non_empty([r.get("tone_tag") for r in rows], limit=5),
+        "recent_subjects": _unique_non_empty([r.get("subject") for r in rows], limit=5),
+        "sample_recipients": _unique_non_empty([r.get("recipient") for r in rows], limit=5),
+        "examples": rows[:examples_limit],
+    }
+
+
+def _unique_non_empty(values: Iterable[Any], limit: int = 5) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _normalise_email(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalised = value.strip().lower()
+    return normalised or None

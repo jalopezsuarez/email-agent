@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from email.utils import parseaddr
 
 from bs4 import BeautifulSoup
 
@@ -155,28 +154,18 @@ class ResponderAgent:
 
     # --------------------------------------------------------- helpers
     def _build_voice_profile(self) -> str:
-        # Summarise aggregate style from stored samples.
-        profile_lines = []
-        stored = self.sqlite.list_style_samples_for(None, limit=30)
-        if not stored:
+        profile = self.sqlite.style_profile(limit=30)
+        if not profile["sample_count"]:
             return "No style samples yet. Be polite, concise and match the sender's register."
-        greetings = [s.get("greeting") for s in stored if s.get("greeting")]
-        signoffs = [s.get("signoff") for s in stored if s.get("signoff")]
-        avg_words = (
-            sum(int(s.get("word_count") or 0) for s in stored) / max(1, len(stored))
-        )
-        if greetings:
-            profile_lines.append(
-                "Typical greetings: " + ", ".join(sorted(set(greetings))[:5])
-            )
-        if signoffs:
-            profile_lines.append(
-                "Typical sign-offs: " + ", ".join(sorted(set(signoffs))[:5])
-            )
-        profile_lines.append(f"Average reply length: ~{int(avg_words)} words.")
-        tones = {s.get("tone_tag") for s in stored if s.get("tone_tag")}
-        if tones:
-            profile_lines.append("Typical tone tags: " + ", ".join(sorted(tones)))
+        profile_lines = []
+        if profile["greetings"]:
+            profile_lines.append("Typical greetings: " + ", ".join(profile["greetings"]))
+        if profile["signoffs"]:
+            profile_lines.append("Typical sign-offs: " + ", ".join(profile["signoffs"]))
+        if profile["avg_word_count"] is not None:
+            profile_lines.append(f"Average reply length: ~{int(profile['avg_word_count'])} words.")
+        if profile["tone_tags"]:
+            profile_lines.append("Typical tone tags: " + ", ".join(profile["tone_tags"]))
         return "\n".join(profile_lines)
 
     @staticmethod
